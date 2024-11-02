@@ -5,7 +5,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::{f32::consts::E, io};
+use std::io;
 
 use ratatui::{
     backend::CrosstermBackend,
@@ -20,6 +20,8 @@ enum InputMode {
     Normal,
     Editing,
     Searching,
+    Adding,
+    Confirming,
 }
 impl Default for InputMode {
     fn default() -> Self {
@@ -34,6 +36,9 @@ struct App {
     todos: Vec<String>, // we'll make this more sophisticated later
     filtered_todos: Vec<String>,
     selected_index: Option<usize>,
+    // for add
+    input_buffer: String,
+    show_confirmation: bool,
 }
 
 impl App {
@@ -53,6 +58,8 @@ impl App {
             todos,
             filtered_todos,
             selected_index: Some(0),
+            input_buffer: String::new(),
+            show_confirmation: false,
         }
     }
 
@@ -122,6 +129,46 @@ impl App {
             }
         }
     }
+
+    fn add_todo(&mut self) {
+        if !self.input_buffer.is_empty() {
+            self.todos.push(self.input_buffer.clone());
+            self.input_buffer.clear();
+            self.filter_todos(); // refresh filtered list
+        }
+    }
+
+    fn delete_selected_todo(&mut self) {
+        if let Some(selected_index) = self.selected_index {
+            // find the corresponding index in the original todos list
+            if let Some(selected_todo) = self.filtered_todos.get(selected_index) {
+                if let Some(original_index) = self.todos.iter().position(|x| x == selected_todo) {
+                    self.todos.remove(original_index);
+                    self.filter_todos(); // refresh filtered list
+
+                    // adjust selection
+                    if self.filtered_todos.is_empty() {
+                        self.selected_index = None
+                    } else {
+                        self.selected_index =
+                            Some(selected_index.min(self.filtered_todos.len() - 1))
+                    }
+                }
+            }
+        }
+    }
+
+    fn start_delete_confirmation(&mut self) {
+        if self.selected_index.is_some() {
+            self.input_mode = InputMode::Confirming;
+            self.show_confirmation = true
+        }
+    }
+
+    fn cancel_delete(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.show_confirmation = false;
+    }
 }
 
 fn main() -> Result<(), io::Error> {
@@ -167,17 +214,27 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
                 ])
                 .split(frame.area());
 
-            // =========== Search bar ================ //
-            let search_text = match app.input_mode {
+            // =========== Render input area (search or add input) ================ //
+            let input_text = match app.input_mode {
                 InputMode::Searching => format!("Search: {}", app.search_input),
+                InputMode::Adding => format!("New todo: {}", app.input_buffer),
                 _ => format!("Press '/' to search (Filter: {})", app.search_input),
             };
 
-            let search_bar = Paragraph::new(Line::from(search_text))
-                .style(Style::default())
-                .block(Block::default().title("Search").borders(Borders::ALL));
+            let input_block_title = match app.input_mode {
+                InputMode::Adding => "Add todo",
+                _ => "Search",
+            };
 
-            frame.render_widget(search_bar, main_layout[0]);
+            let input_area = Paragraph::new(Line::from(input_text))
+                .style(Style::default())
+                .block(
+                    Block::default()
+                        .title(input_block_title)
+                        .borders(Borders::ALL),
+                );
+
+            frame.render_widget(input_area, main_layout[0]);
 
             // render the todo list with selection highlight
             let todos: Vec<ListItem> = app
@@ -212,8 +269,12 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
 
             // update status bar to show search instructions
             let mode_text = match app.input_mode {
-                InputMode::Normal => "Normal Mode | q: quit, /: search, j/k: move, a: add",
+                InputMode::Normal => {
+                    "Normal Mode | q/esc: quit, /: search, a: add, r/d: remove, j/k: move"
+                }
                 InputMode::Searching => "Search Mode | Enter: apply filter, Esc: clear filter",
+                InputMode::Adding => "Add Mode | Enter: save todo, Esc: cancel",
+                InputMode::Confirming => "Delete? | y: continue, n/Esc: cancel",
                 InputMode::Editing => "Edit Mode | Enter: confirm, Esc: cancel",
             };
             let status_bar = Paragraph::new(Line::from(mode_text))
@@ -222,14 +283,37 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
 
             frame.render_widget(status_bar, main_layout[2]);
 
-            // 4. render the popup if needed (we'll implement this later)
-            if false {
-                // this will be a condition for showing the popup
-                frame.render_widget(
-                    Paragraph::new("Popup content")
-                        .block(Block::default().title("Popup").borders(Borders::ALL)),
-                    centered_rect(50, 50, frame.area()),
+            // render configuration dialog if needed
+            if app.show_confirmation {
+                // create a temporal string that lives long enough to be used in the Line::from function
+                let fallback_string = String::new();
+                let selected_todo = app
+                    .selected_index
+                    .and_then(|i| app.filtered_todos.get(i))
+                    .unwrap_or(&fallback_string);
+
+                let popup_area = centered_rect(60, 30, frame.area());
+                let confirmation = Paragraph::new(vec![
+                    Line::from("Delete this todo?"),
+                    Line::from(""),
+                    Line::from(selected_todo.as_str()),
+                    Line::from(""),
+                    Line::from("Press 'y' to confirm or 'n'/Esc to cancel"),
+                ])
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .title("Confirm delete")
+                        .borders(Borders::ALL),
                 );
+
+                frame.render_widget(
+                    Block::default()
+                        .style(Style::default().bg(Color::Black))
+                        .borders(Borders::ALL),
+                    frame.area(),
+                );
+                frame.render_widget(confirmation, popup_area);
             }
         })?;
 
@@ -242,10 +326,17 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
         {
             match app.input_mode {
                 InputMode::Normal => match code {
-                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('/') => {
                         app.input_mode = InputMode::Searching;
-                        app.search_input.clear();
+                        // app.search_input.clear();
+                    }
+                    KeyCode::Char('a') => {
+                        app.input_mode = InputMode::Adding;
+                        app.input_buffer.clear();
+                    }
+                    KeyCode::Char('r') | KeyCode::Char('d') => {
+                        app.start_delete_confirmation();
                     }
                     KeyCode::Char('j') | KeyCode::Down => app.move_selection_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.move_selection_up(),
@@ -266,6 +357,33 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
                     KeyCode::Backspace => {
                         app.search_input.pop();
                         app.filter_todos(); // update filtered todos on backspace
+                    }
+                    _ => {}
+                },
+                InputMode::Adding => match code {
+                    KeyCode::Enter => {
+                        app.add_todo();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Esc => {
+                        app.input_mode = InputMode::Normal;
+                        app.input_buffer.clear();
+                    }
+                    KeyCode::Char(c) => {
+                        app.input_buffer.push(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.input_buffer.pop();
+                    }
+                    _ => {}
+                },
+                InputMode::Confirming => match code {
+                    KeyCode::Char('y') => {
+                        app.delete_selected_todo();
+                        app.cancel_delete();
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => {
+                        app.cancel_delete();
                     }
                     _ => {}
                 },
