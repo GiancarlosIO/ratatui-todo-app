@@ -169,6 +169,33 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.show_confirmation = false;
     }
+
+    fn start_editing(&mut self) {
+        if let Some(selected_index) = self.selected_index {
+            if let Some(todo) = self.filtered_todos.get(selected_index) {
+                self.input_buffer = todo.clone();
+                self.input_mode = InputMode::Editing;
+            }
+        }
+    }
+
+    fn save_edit(&mut self) {
+        if let Some(selected_index) = self.selected_index {
+            if let Some(selected_todo) = self.filtered_todos.get(selected_index) {
+                if let Some(original_index) = self.todos.iter().position(|x| x == selected_todo) {
+                    if !self.input_buffer.is_empty() {
+                        self.todos[original_index] = self.input_buffer.clone();
+                        self.filter_todos();
+                    }
+                }
+            }
+        }
+    }
+
+    fn cancel_edit(&mut self) {
+        self.input_buffer.clear();
+        self.input_mode = InputMode::Normal;
+    }
 }
 
 fn main() -> Result<(), io::Error> {
@@ -218,11 +245,13 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
             let input_text = match app.input_mode {
                 InputMode::Searching => format!("Search: {}", app.search_input),
                 InputMode::Adding => format!("New todo: {}", app.input_buffer),
+                InputMode::Editing => format!("Edit todo: {}", app.input_buffer),
                 _ => format!("Press '/' to search (Filter: {})", app.search_input),
             };
 
             let input_block_title = match app.input_mode {
                 InputMode::Adding => "Add todo",
+                InputMode::Editing => "Edit todo",
                 _ => "Search",
             };
 
@@ -270,12 +299,12 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
             // update status bar to show search instructions
             let mode_text = match app.input_mode {
                 InputMode::Normal => {
-                    "Normal Mode | q/esc: quit, /: search, a: add, r/d: remove, j/k: move"
+                    "Normal Mode | q/esc: quit, /: search, a: add, i: edit, r/d: remove, j/k: move"
                 }
                 InputMode::Searching => "Search Mode | Enter: apply filter, Esc: clear filter",
                 InputMode::Adding => "Add Mode | Enter: save todo, Esc: cancel",
                 InputMode::Confirming => "Delete? | y: continue, n/Esc: cancel",
-                InputMode::Editing => "Edit Mode | Enter: confirm, Esc: cancel",
+                InputMode::Editing => "Edit Mode | Enter: save changes, Esc: cancel",
             };
             let status_bar = Paragraph::new(Line::from(mode_text))
                 .style(Style::default())
@@ -338,6 +367,11 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
                     KeyCode::Char('r') | KeyCode::Char('d') => {
                         app.start_delete_confirmation();
                     }
+                    KeyCode::Char('i') => {
+                        if app.selected_index.is_some() {
+                            app.start_editing();
+                        }
+                    }
                     KeyCode::Char('j') | KeyCode::Down => app.move_selection_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.move_selection_up(),
                     _ => {}
@@ -388,7 +422,18 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> io::Resu
                     _ => {}
                 },
                 InputMode::Editing => match code {
-                    KeyCode::Esc => app.input_mode = InputMode::Normal,
+                    KeyCode::Enter => {
+                        app.save_edit();
+                    }
+                    KeyCode::Esc => {
+                        app.cancel_edit();
+                    }
+                    KeyCode::Char(c) => {
+                        app.input_buffer.push(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.input_buffer.pop();
+                    }
                     _ => {}
                 },
             }
